@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "RecallOps"
+description = "A professional AI-powered incident troubleshooting dashboard that uses mock Hindsight memory to recall similar software incidents and suggest solutions."
+version = "1.0.0"
+id = "artifacts/recallops"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24510
+
+[services.development]
+run = "pnpm --filter @workspace/recallops run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/recallops", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/recallops/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24510"
+BASE_PATH = "/"
