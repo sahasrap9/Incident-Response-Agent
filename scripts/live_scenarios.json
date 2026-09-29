@@ -1,0 +1,14 @@
+[
+  {
+    "id": "LIVE-1",
+    "service": "checkout-service",
+    "title": "Checkout 502s during flash-sale traffic",
+    "query": "Flash-sale traffic spike: checkout endpoint returning HTTP 502 for about 8 minutes, and the app log shows Postgres connection pool exhausted with max_connections=20 reached."
+  },
+  {
+    "id": "LIVE-2",
+    "service": "auth-service",
+    "title": "Mobile 401 spike after a key rotation",
+    "query": "Mobile clients suddenly getting a wave of 401 Unauthorized errors right after a JWT signing key rotation. Error log says signature verification failed."
+  }
+]
