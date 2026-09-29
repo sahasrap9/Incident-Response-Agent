@@ -1,3 +1,4 @@
+import os
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -10,6 +11,27 @@ router = APIRouter(
 
 class AnalyzeRequest(BaseModel):
     logs: str
+
+
+@router.get("/status")
+def analyze_status():
+    return {
+        "ai_configured": bool(
+            os.getenv("GROQ_API_KEY")
+            and os.getenv("HINDSIGHT_BASE_URL")
+            and os.getenv("HINDSIGHT_API_KEY")
+        ),
+        "message": (
+            "AI memory integration is configured."
+            if (
+                os.getenv("GROQ_API_KEY")
+                and os.getenv("HINDSIGHT_BASE_URL")
+                and os.getenv("HINDSIGHT_API_KEY")
+            )
+            else
+            "AI memory integration is waiting for environment configuration."
+        )
+    }
 
 
 @router.post("/")
@@ -52,4 +74,24 @@ def analyze_incident(request: AnalyzeRequest):
         "suggested_fix": suggested_fix,
         "tags": tags,
         "confidence": 85
+    }
+@router.post("/ai")
+def analyze_incident_with_ai(request: AnalyzeRequest):
+    if not (
+        os.getenv("GROQ_API_KEY")
+        and os.getenv("HINDSIGHT_BASE_URL")
+        and os.getenv("HINDSIGHT_API_KEY")
+    ):
+        return {
+            "status": "not_configured",
+            "message": "AI memory integration requires Hindsight and Groq environment configuration."
+        }
+
+    from src.memory.agent_orchestrator import analyze_alert
+
+    result = analyze_alert(request.logs)
+
+    return {
+        "status": "success",
+        "analysis": result
     }

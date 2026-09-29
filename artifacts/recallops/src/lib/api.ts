@@ -87,3 +87,40 @@ export async function analyzeIncident(logs: string): Promise<AnalyzeResponse> {
 
   return response.json();
 }
+export type AIAnalyzeResponse = {
+  status: string;
+  message?: string;
+  analysis?: string;
+};
+
+export async function analyzeIncidentAI(
+  logs: string
+): Promise<AIAnalyzeResponse> {
+  const response = await fetch(`${API_BASE_URL}/analyze/ai`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ logs }),
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to run AI incident analysis");
+  }
+
+  return response.json();
+}
+export type AnalyzeStatusResponse = {
+  ai_configured: boolean;
+  message: string;
+};
+
+export async function getAnalyzeStatus(): Promise<AnalyzeStatusResponse> {
+  const response = await fetch(`${API_BASE_URL}/analyze/status`);
+
+  if (!response.ok) {
+    throw new Error("Failed to check AI configuration");
+  }
+
+  return response.json();
+}
