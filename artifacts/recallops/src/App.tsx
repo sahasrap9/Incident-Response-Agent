@@ -1,3 +1,10 @@
+import {
+  getIncidents,
+  mapBackendIncident,
+  getIncident,
+  getIncidentStats,
+  analyzeIncident,
+} from '@/lib/api';
 import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from 'react';
 import { Route, Switch, Link, useLocation, useParams, Router as WouterRouter } from 'wouter';
 import {
@@ -267,67 +274,7 @@ type MockAnalysis = {
   duration: string;
 };
 
-function getMockAnalysis(logText: string): MockAnalysis {
-  const normalized = logText.toLowerCase();
 
-  if (/(kafka|consumer|rebalance|queue|lag|offset)/.test(normalized)) {
-    return {
-      rootCause: 'A consumer rebalance paused partition ownership while a slow downstream dependency caused the processing queue to build up.',
-      service: 'dispatch-worker',
-      tags: ['message queue', 'consumer lag', 'rebalance'],
-      suggestedFix: 'Pause the rebalance loop, restore the consumer group to 6 workers, and replay the oldest 500 messages after lag returns below the alert threshold.',
-      matchedIncident: 'INC-2241 · dispatch consumer rebalance',
-      confidence: 91,
-      duration: '31m',
-    };
-  }
-
-  if (/(postgres|database|deadlock|transaction|lock|replica)/.test(normalized)) {
-    return {
-      rootCause: 'A long-running reporting transaction held a write lock against the orders table, forcing API requests to wait behind a saturated connection pool.',
-      service: 'orders-db',
-      tags: ['postgres', 'transaction lock', 'connection pool'],
-      suggestedFix: 'Cancel the blocking reporting query, add the missing order-date index, and route the next report run to the read replica.',
-      matchedIncident: 'INC-1982 · reporting transaction lock',
-      confidence: 95,
-      duration: '24m',
-    };
-  }
-
-  if (/(auth|token|jwt|signing|401|403|credential)/.test(normalized)) {
-    return {
-      rootCause: 'A rotated signing key was not yet available in the identity edge cache, causing valid tokens to fail verification in one region.',
-      service: 'identity-edge',
-      tags: ['authentication', 'signing key', 'cache'],
-      suggestedFix: 'Purge the identity-edge key cache, confirm the new signing key is present in every region, and retry the rejected requests.',
-      matchedIncident: 'INC-1887 · stale signing key cache',
-      confidence: 94,
-      duration: '18m',
-    };
-  }
-
-  if (/(search|elastic|index|write queue|shard)/.test(normalized)) {
-    return {
-      rootCause: 'The search write queue saturated after a shard relocation, increasing indexing latency and pushing the service above its SLO.',
-      service: 'indexer-worker',
-      tags: ['elasticsearch', 'write queue', 'shard'],
-      suggestedFix: 'Pause the shard relocation, increase indexing worker capacity to 4, and drain the write queue before resuming the migration.',
-      matchedIncident: 'INC-2312 · elasticsearch write queue saturation',
-      confidence: 89,
-      duration: '42m',
-    };
-  }
-
-  return {
-    rootCause: 'An upstream dependency exceeded its response budget, causing retries to consume the service connection pool and return elevated 5xx responses.',
-    service: 'checkout-api',
-    tags: ['upstream dependency', '5xx responses', 'connection pool'],
-    suggestedFix: 'Roll back the latest gateway client change, increase the upstream idle pool to 64, and replay failed requests from the dead-letter queue.',
-    matchedIncident: 'INC-2034 · checkout gateway timeout',
-    confidence: 93,
-    duration: '27m',
-  };
-}
 
 async function copyText(value: string) {
   if (navigator.clipboard?.writeText) {
@@ -349,10 +296,35 @@ async function copyText(value: string) {
 
 function DashboardPage() {
   const [range, setRange] = useState('Last 30 days');
+  const [stats, setStats] = useState({
+    total: 0,
+    open: 0,
+    resolved: 0,
+  });
+  const [dashboardIncidents, setDashboardIncidents] = useState<Incident[]>([]);
+  useEffect(() => {
+    getIncidentStats()
+      .then((data) => {
+        setStats(data);
+      })
+      .catch((error) => {
+        console.error('Failed to load dashboard stats:', error);
+      });
+  }, []);
+    useEffect(() => {
+    getIncidents()
+      .then((data) => {
+        setDashboardIncidents(data.map(mapBackendIncident));
+      })
+      .catch((error) => {
+        console.error('Failed to load dashboard incidents:', error);
+      });
+  }, []);
   return <div className="reveal">
     <PageHeading eyebrow="Operations overview" title="Good afternoon, Maya." description="Here’s what’s happening across your incident memory." action={<div className="flex items-center gap-2"><select value={range} onChange={(event) => setRange(event.target.value)} data-testid="select-dashboard-range" className="rounded-lg border border-white/10 bg-white/[.04] px-3 py-2 text-xs text-slate-300 outline-none"><option>Last 7 days</option><option>Last 30 days</option><option>Last 90 days</option></select><Link href="/analyze" data-testid="link-quick-analyze" className="flex items-center gap-2 rounded-lg bg-blue-500 px-3.5 py-2 text-xs font-semibold text-white shadow-lg shadow-blue-500/15 transition hover:bg-blue-400"><Plus size={15} /> Analyze logs</Link></div>} />
     <div className="grid grid-cols-2 gap-3 md:grid-cols-4 sm:gap-4">
-      <StatCard label="Total incidents" value="47" change="+12.5%" icon={AlertCircle} tone="blue" /><StatCard label="Resolved incidents" value="38" change="+8.6%" icon={CheckCircle2} tone="violet" /><StatCard label="Memory matches" value="34" change="+6.4%" icon={BrainCircuit} tone="cyan" /><StatCard label="Avg. resolution time" value="28m" change="-18.2%" icon={Clock3} tone="amber" />
+      <StatCard label="Total incidents" value={String(stats.total)} change="" icon={AlertCircle} tone="blue" />
+      <StatCard label="Resolved incidents" value={String(stats.resolved)} change="" icon={CheckCircle2} tone="violet" />
     </div>
     <div className="mt-5 grid gap-5 xl:grid-cols-[1.55fr_1fr]">
       <section className="panel rounded-2xl p-5 sm:p-6">
@@ -364,7 +336,7 @@ function DashboardPage() {
       <section className="panel grid-surface rounded-2xl p-5 sm:p-6"><div className="flex items-start justify-between"><div><h2 className="text-sm font-semibold text-slate-200">Service health</h2><p className="mt-1 text-[11px] text-slate-500">Current incident load</p></div><Gauge size={17} className="text-slate-500" /></div><div className="mt-5 space-y-4">{[['checkout-api', 72, '1 active'], ['identity-edge', 44, '1 monitoring'], ['indexer-worker', 31, 'healthy'], ['orders-db', 18, 'healthy']].map(([name, width, note]) => <div key={name as string}><div className="mb-1.5 flex items-center justify-between text-[11px]"><span className="font-medium text-slate-300">{name}</span><span className="text-slate-500">{note}</span></div><div className="h-1.5 rounded-full bg-slate-800"><div style={{ width: `${width}%` }} className={cx('h-full rounded-full', Number(width) > 60 ? 'bg-gradient-to-r from-blue-500 to-violet-400' : Number(width) > 40 ? 'bg-cyan-400/70' : 'bg-emerald-400/70')} /></div></div>)}</div><div className="mt-5 flex items-center gap-2 border-t border-white/[.06] pt-4 text-[10px] text-slate-500"><CircleDot size={12} className="text-emerald-400" /> 6 services reporting normally</div></section>
     </div>
     <div className="mt-5 grid gap-5 xl:grid-cols-[1.55fr_1fr]">
-      <section className="panel overflow-hidden rounded-2xl"><div className="flex items-center justify-between border-b border-white/[.07] p-5"><div><h2 className="text-sm font-semibold text-slate-200">Recent incidents</h2><p className="mt-1 text-[11px] text-slate-500">Latest activity from your connected services</p></div><Link href="/history" data-testid="link-all-incidents" className="text-[11px] font-semibold text-blue-300 hover:text-blue-200">View all <ArrowUpRight className="ml-0.5 inline" size={12} /></Link></div><div className="grid grid-cols-[minmax(0,1fr)_112px_100px_82px] gap-3 border-b border-white/[.06] px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-slate-600 sm:px-5"><span>Incident</span><span className="hidden sm:block">Severity</span><span className="hidden sm:block">Status</span><span /></div>{incidents.slice(0, 4).map((incident) => <IncidentRow incident={incident} key={incident.id} />)}</section>
+      <section className="panel overflow-hidden rounded-2xl"><div className="flex items-center justify-between border-b border-white/[.07] p-5"><div><h2 className="text-sm font-semibold text-slate-200">Recent incidents</h2><p className="mt-1 text-[11px] text-slate-500">Latest activity from your connected services</p></div><Link href="/history" data-testid="link-all-incidents" className="text-[11px] font-semibold text-blue-300 hover:text-blue-200">View all <ArrowUpRight className="ml-0.5 inline" size={12} /></Link></div><div className="grid grid-cols-[minmax(0,1fr)_112px_100px_82px] gap-3 border-b border-white/[.06] px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-slate-600 sm:px-5"><span>Incident</span><span className="hidden sm:block">Severity</span><span className="hidden sm:block">Status</span><span /></div>{dashboardIncidents.slice(0, 4).map((incident) => <IncidentRow incident={incident} key={incident.id} />)}</section>
       <section className="panel rounded-2xl p-5"><div className="flex items-center justify-between"><div><h2 className="text-sm font-semibold text-slate-200">Recent activity</h2><p className="mt-1 text-[11px] text-slate-500">Updates from your team</p></div><Activity size={17} className="text-slate-500" /></div><div className="mt-5 space-y-5">{activity.map((item, index) => <div key={item.action} className="flex gap-3"><div className={cx('relative mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg', item.tone === 'blue' ? 'bg-blue-400/10 text-blue-300' : item.tone === 'purple' ? 'bg-violet-400/10 text-violet-300' : item.tone === 'green' ? 'bg-emerald-400/10 text-emerald-300' : 'bg-slate-400/10 text-slate-300')}>{index === 0 ? <Sparkles size={13} /> : index === 1 ? <BrainCircuit size={13} /> : index === 2 ? <Check size={14} /> : <Network size={13} />}</div><div className="min-w-0"><p className="text-[12px] font-medium text-slate-300">{item.action}</p><p className="mt-0.5 truncate text-[11px] text-slate-500">{item.detail}</p><p className="mt-1 text-[10px] text-slate-600">{item.time}</p></div></div>)}</div></section>
     </div>
   </div>;
@@ -383,15 +355,32 @@ function AnalyzePage() {
     return () => window.clearTimeout(timer);
   }, [running, stage, stages.length]);
   useEffect(() => { if (running && stage === stages.length - 1) setRunning(false); }, [running, stage, stages.length]);
-  const startAnalysis = () => {
-    if (!logs.trim()) return;
-    const nextAnalysis = getMockAnalysis(logs);
-    setAnalysis(null);
-    setCopied(false);
-    setStage(1);
-    setAnalysis(nextAnalysis);
-    setRunning(true);
-  };
+  const startAnalysis = async () => {
+  if (!logs.trim()) return;
+
+  setAnalysis(null);
+  setCopied(false);
+  setStage(1);
+  setRunning(true);
+
+  try {
+    const result = await analyzeIncident(logs);
+
+    setAnalysis({
+      rootCause: result.root_cause,
+      service: result.service,
+      tags: result.tags,
+      suggestedFix: result.suggested_fix,
+      matchedIncident: "Analysis generated by backend",
+      confidence: result.confidence,
+      duration: "1s",
+    });
+  } catch (error) {
+    console.error("Failed to analyze incident:", error);
+    setRunning(false);
+    alert("Failed to analyze incident. Make sure the backend is running.");
+  }
+};
   const handleFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) setLogs(`# ${file.name}\n2024-06-18T14:31:54Z ${file.name.replace(/\.[^.]+$/, '')} ERROR service signal loaded from uploaded log\nrequest_id=8fd2a1 region=us-east-1 status=503`);
@@ -409,7 +398,7 @@ function AnalyzePage() {
   const complete = stage >= stages.length - 1;
   const clearInput = () => { setLogs(''); setStage(0); setAnalysis(null); setCopied(false); };
   return <div className="reveal">
-    <PageHeading eyebrow="AI incident analysis" title="Turn noisy logs into a next move." description="RecallOps compares the signal against your incident memory and returns a reasoned fix." action={<div className="flex items-center gap-2 text-[11px] text-slate-500"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Mock workspace · no data leaves your browser</div>} />
+    <PageHeading eyebrow="AI incident analysis" title="Turn noisy logs into a next move." description="RecallOps compares the signal against your incident memory and returns a reasoned fix." action={<div className="flex items-center gap-2 text-[11px] text-slate-500"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Backend connected · live incident analysis</div>} />
     <div className="grid gap-5 xl:grid-cols-[1.02fr_.98fr]">
       <section className="panel rounded-2xl p-5 sm:p-6"><div className="flex items-center justify-between"><div><h2 className="text-sm font-semibold text-slate-200">Incident input</h2><p className="mt-1 text-[11px] text-slate-500">Paste a stack trace, log excerpt, or upload a file.</p></div><Terminal size={18} className="text-blue-400" /></div>
         <textarea value={logs} onChange={(event) => setLogs(event.target.value)} data-testid="textarea-incident-logs" placeholder={'Paste logs here…\n\nExample: 2024-06-18T14:31:54Z checkout-api ERROR upstream connect error'} className="mt-5 h-[265px] w-full resize-none rounded-xl border border-white/10 bg-[#090f21] p-4 font-mono-ui text-[11px] leading-6 text-slate-300 outline-none transition-colors placeholder:text-slate-600 focus:border-blue-400/60 focus:ring-2 focus:ring-blue-400/10" />
@@ -423,13 +412,24 @@ function AnalyzePage() {
 }
 
 function HistoryPage() {
+  const [apiIncidents, setApiIncidents] = useState<Incident[]>([]);
   const [query, setQuery] = useState('');
   const [service, setService] = useState('All services');
   const [status, setStatus] = useState('All statuses');
-  const filtered = useMemo(() => incidents.filter((incident) => {
+  useEffect(() => {
+  getIncidents()
+    .then((data) => {
+      alert(`Backend returned ${data.length} incident(s)`);
+      setApiIncidents(data.map(mapBackendIncident));
+    })
+    .catch((error) => {
+      alert(`Failed to load incidents: ${error}`);
+    });
+}, []);
+  const filtered = useMemo(() => apiIncidents.filter((incident) => {
     const matchesQuery = `${incident.title} ${incident.service} ${incident.id} ${incident.errorMessage}`.toLowerCase().includes(query.toLowerCase());
     return matchesQuery && (service === 'All services' || incident.service === service) && (status === 'All statuses' || incident.status === status);
-  }), [query, service, status]);
+  }), [apiIncidents, query, service, status]);
   return <div className="reveal"><PageHeading eyebrow="Incident archive" title="Incident history" description="Search every investigation and the memory it left behind." action={<Link href="/analyze" data-testid="link-history-analyze" className="flex items-center gap-2 self-start rounded-lg bg-blue-500 px-3.5 py-2.5 text-xs font-semibold text-white shadow-lg shadow-blue-500/15 hover:bg-blue-400 sm:self-auto"><Plus size={15} /> New analysis</Link>} />
     <section className="panel overflow-hidden rounded-2xl"><div className="flex flex-col gap-3 border-b border-white/[.07] p-4 sm:flex-row sm:items-center sm:p-5"><div className="relative min-w-0 flex-1"><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" /><input value={query} onChange={(event) => setQuery(event.target.value)} data-testid="input-search-incidents" placeholder="Search title, service, ID, or error…" className="h-9 w-full rounded-lg border border-white/10 bg-white/[.03] pl-9 pr-3 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-blue-400/50" /></div><div className="flex items-center gap-2"><div className="relative"><Filter size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" /><select value={service} onChange={(event) => setService(event.target.value)} data-testid="select-service-filter" className="h-9 max-w-[150px] appearance-none rounded-lg border border-white/10 bg-white/[.03] pl-8 pr-7 text-[11px] text-slate-300 outline-none"><option>All services</option>{serviceOptions.slice(1).map((item) => <option key={item}>{item}</option>)}</select></div><select value={status} onChange={(event) => setStatus(event.target.value)} data-testid="select-status-filter" className="h-9 rounded-lg border border-white/10 bg-white/[.03] px-3 text-[11px] text-slate-300 outline-none"><option>All statuses</option><option>Investigating</option><option>Monitoring</option><option>Resolved</option><option>Open</option></select></div></div><div className="flex items-center justify-between border-b border-white/[.06] px-4 py-3 text-[10px] text-slate-500 sm:px-5"><span><strong className="font-semibold text-slate-300">{filtered.length}</strong> incidents found</span><span className="hidden items-center gap-1.5 sm:flex"><SlidersHorizontal size={12} /> Filters update instantly</span></div>{filtered.length > 0 ? filtered.map((incident) => <IncidentRow incident={incident} key={incident.id} />) : <div className="flex flex-col items-center justify-center px-6 py-20 text-center"><Search size={24} className="text-slate-600" /><h3 className="mt-3 text-sm font-semibold text-slate-300">No incidents found</h3><p className="mt-1 text-xs text-slate-500">Try a different search or clear one of your filters.</p><button onClick={() => { setQuery(''); setService('All services'); setStatus('All statuses'); }} data-testid="button-clear-history-filters" className="mt-4 rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold text-blue-300 hover:bg-white/5">Clear filters</button></div>}</section>
   </div>;
@@ -437,7 +437,17 @@ function HistoryPage() {
 
 function MemoryPage() {
   const [selected, setSelected] = useState('all');
-  const memories = incidents.slice(0, 5);
+  const [memories, setMemories] = useState<Incident[]>([]);
+
+  useEffect(() => {
+    getIncidents()
+      .then((data) => {
+        setMemories(data.map(mapBackendIncident).slice(0, 5));
+      })
+      .catch((error) => {
+        console.error("Failed to load memory incidents:", error);
+      });
+  }, []);
   return <div className="reveal"><PageHeading eyebrow="Hindsight memory" title="What your incidents teach you." description="A living memory of what broke, why it broke, and what fixed it." action={<div className="flex items-center gap-2 rounded-lg border border-violet-400/20 bg-violet-400/[.06] px-3 py-2 text-[11px] text-violet-200"><BrainCircuit size={14} /> 1,284 memories</div>} />
     <section className="mb-5 overflow-hidden rounded-2xl border border-blue-400/15 bg-gradient-to-br from-blue-500/[.12] via-[#101a38] to-violet-500/[.10] p-5 sm:p-7"><div className="grid gap-6 lg:grid-cols-[1.1fr_.9fr] lg:items-center"><div><div className="mb-3 flex h-9 w-9 items-center justify-center rounded-xl bg-blue-400/15 text-blue-300"><BrainCircuit size={19} /></div><h2 className="font-display text-xl font-semibold text-slate-100">Memory that gets sharper with every incident.</h2><p className="mt-2 max-w-xl text-xs leading-6 text-slate-400">Hindsight stores the context around an incident—not just the error. It connects symptoms, root causes, fixes, and operator decisions so the next investigation starts with signal.</p><button data-testid="button-learn-memory" onClick={() => setSelected(selected === 'all' ? 'learned' : 'all')} className="mt-4 flex items-center gap-1.5 text-[11px] font-semibold text-blue-300 hover:text-blue-200">{selected === 'learned' ? 'Showing learned patterns' : 'See how recall works'} <ArrowRight size={13} /></button></div><div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3"><div className="rounded-xl border border-white/[.08] bg-[#0a1227]/50 p-3"><p className="font-display text-xl font-semibold text-slate-100">94%</p><p className="mt-1 text-[10px] text-slate-500">top match accuracy</p></div><div className="rounded-xl border border-white/[.08] bg-[#0a1227]/50 p-3"><p className="font-display text-xl font-semibold text-slate-100">3.6×</p><p className="mt-1 text-[10px] text-slate-500">faster resolution</p></div><div className="col-span-2 rounded-xl border border-white/[.08] bg-[#0a1227]/50 p-3 sm:col-span-1"><p className="font-display text-xl font-semibold text-slate-100">72%</p><p className="mt-1 text-[10px] text-slate-500">fixes accepted</p></div></div></div></section>
     <div className="mb-4 flex items-center gap-2 overflow-x-auto pb-1"><button onClick={() => setSelected('all')} data-testid="button-memory-all" className={cx('rounded-lg px-3 py-2 text-[11px] font-semibold', selected === 'all' || selected === 'learned' ? 'bg-blue-500 text-white' : 'border border-white/10 text-slate-400')}>All memories</button><button onClick={() => setSelected('confirmed')} data-testid="button-memory-confirmed" className={cx('rounded-lg px-3 py-2 text-[11px] font-semibold', selected === 'confirmed' ? 'bg-blue-500 text-white' : 'border border-white/10 text-slate-400')}>Confirmed solutions</button><button onClick={() => setSelected('high')} data-testid="button-memory-high-similarity" className={cx('rounded-lg px-3 py-2 text-[11px] font-semibold', selected === 'high' ? 'bg-blue-500 text-white' : 'border border-white/10 text-slate-400')}>High similarity</button></div>
@@ -447,11 +457,22 @@ function MemoryPage() {
 
 function IncidentDetailPage() {
   const params = useParams();
-  const incident = incidents.find((item) => item.id === params.id);
+  const [incident, setIncident] = useState<Incident | null>(null);
+  useEffect(() => {
+  if (!params.id) return;
+
+  getIncident(params.id.replace("INC-", ""))
+    .then((data) => {
+      setIncident(mapBackendIncident(data));
+    })
+    .catch((error) => {
+      console.error("Failed to load incident:", error);
+    });
+}, [params.id]);
   const [copied, setCopied] = useState(false);
   if (!incident) return <NotFoundPage />;
   const copyFix = () => { setCopied(true); navigator.clipboard?.writeText(incident.suggestedFix); window.setTimeout(() => setCopied(false), 1600); };
-  const related = incidents.filter((item) => incident.relatedIncidentIds.includes(item.id));
+  const related: Incident[] = [];
   return <div className="reveal"><Link href="/history" data-testid="link-back-history" className="mb-6 inline-flex items-center gap-2 text-[11px] font-semibold text-slate-500 hover:text-blue-300"><ArrowLeft size={14} /> Back to incident history</Link><PageHeading eyebrow={`${incident.id} · ${incident.service}`} title={incident.title} description={`Detected ${formatDate(incident.timestamp)} · owned by ${incident.owner}`} action={<div className="flex items-center gap-2"><SeverityBadge severity={incident.severity} /><StatusBadge status={incident.status} /></div>} />
     <div className="grid gap-5 xl:grid-cols-[1.1fr_.9fr]"><div className="space-y-5"><section className="panel rounded-2xl p-5 sm:p-6"><div className="flex items-center justify-between"><div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500"><Terminal size={14} className="text-blue-400" /> Error signal</div><button data-testid="button-copy-error" onClick={() => navigator.clipboard?.writeText(incident.errorMessage)} className="flex items-center gap-1.5 text-[10px] text-slate-500 hover:text-slate-300"><Copy size={12} /> Copy</button></div><pre data-testid="text-incident-error" className="mt-4 overflow-x-auto whitespace-pre-wrap rounded-xl border border-red-400/10 bg-[#090e20] p-4 font-mono-ui text-[11px] leading-6 text-red-200/80">{incident.errorMessage}</pre><div className="mt-4 flex flex-wrap gap-2">{incident.tags.map((tag) => <span key={tag} className="rounded-md bg-white/[.05] px-2 py-1 text-[10px] text-slate-400">#{tag}</span>)}</div></section><section className="panel rounded-2xl p-5 sm:p-6"><div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500"><AlertCircle size={14} className="text-amber-300" /> Root cause</div><p data-testid="text-incident-root-cause" className="mt-4 text-sm leading-7 text-slate-300">{incident.rootCause}</p><div className="mt-5 grid gap-3 sm:grid-cols-3"><div className="rounded-xl bg-white/[.03] p-3"><p className="text-[10px] text-slate-600">Duration</p><p className="mt-1 text-sm font-semibold text-slate-200">{incident.duration}</p></div><div className="rounded-xl bg-white/[.03] p-3"><p className="text-[10px] text-slate-600">Memory match</p><p className="mt-1 truncate text-sm font-semibold text-slate-200">{incident.memoryMatch.split(' · ')[0]}</p></div><div className="rounded-xl bg-white/[.03] p-3"><p className="text-[10px] text-slate-600">Confidence</p><p className="mt-1 text-sm font-semibold text-blue-300">{incident.similarity}%</p></div></div></section></div><div className="space-y-5"><section className="rounded-2xl border border-violet-400/20 bg-gradient-to-br from-violet-500/[.13] to-blue-500/[.06] p-5 sm:p-6"><div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider text-violet-300"><Lightbulb size={14} /> Suggested solution</div><p data-testid="text-incident-suggested-fix" className="mt-4 text-sm leading-7 text-slate-200">{incident.suggestedFix}</p><button onClick={copyFix} data-testid="button-copy-incident-fix" className="mt-5 flex items-center gap-2 rounded-lg bg-violet-400/15 px-3 py-2 text-[11px] font-semibold text-violet-200 hover:bg-violet-400/25">{copied ? <Check size={13} /> : <Copy size={13} />}{copied ? 'Copied to clipboard' : 'Copy suggested fix'}</button></section><section className="panel rounded-2xl p-5 sm:p-6"><div className="flex items-center justify-between"><div><h2 className="text-sm font-semibold text-slate-200">Related incidents</h2><p className="mt-1 text-[11px] text-slate-500">What Hindsight recalled</p></div><BrainCircuit size={17} className="text-blue-400" /></div><div className="mt-4 divide-y divide-white/[.06]">{related.length ? related.map((item) => <Link href={`/incidents/${item.id}`} data-testid={`link-related-${item.id}`} key={item.id} className="group flex items-center justify-between py-3 first:pt-0 last:pb-0"><div className="min-w-0"><p className="truncate text-[12px] font-medium text-slate-300 group-hover:text-blue-300">{item.title}</p><p className="mt-1 text-[10px] text-slate-600">{item.id} · {item.service}</p></div><span className="ml-3 flex shrink-0 items-center gap-2"><span className="text-[11px] font-semibold text-blue-300">{item.similarity}%</span><ArrowRight size={13} className="text-slate-600 group-hover:text-blue-300" /></span></Link>) : <p className="text-xs text-slate-500">No related memories yet.</p>}</div></section></div></div>
   </div>;

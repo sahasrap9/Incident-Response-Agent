@@ -48,6 +48,20 @@ Thumbs.db
 .cache/
 .local/
 
+<<<<<<< HEAD
 .env
 __pycache__/
 *.pyc
+=======
+# Python
+__pycache__/
+*.py[cod]
+
+# Local database
+*.db
+*.sqlite
+*.sqlite3
+
+# npm lockfile (project uses pnpm)
+package-lock.json
+>>>>>>> 94e5190 (Connect frontend to incident backend)
